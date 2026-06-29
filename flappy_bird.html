@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Flappy Bird - Progressive Difficulty</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background-color: #2c3e50;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            /* Prevents default double-tap zoom behavior on mobile */
+            touch-action: none; 
+        }
+        canvas {
+            background-color: #70c5ce;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            max-width: 100%;
+            max-height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- Game States ---
+        const STATES = {
+            START_SCREEN: 'START',
+            PLAYING: 'PLAYING',
+            GAME_OVER: 'GAME_OVER'
+        };
+        let currentState = STATES.START_SCREEN;
+
+        // --- Core Configurations & Constants ---
+        const GROUND_HEIGHT = 60;
+        const CEILING_BOUNDS = 0;
+        
+        // Base Difficulty Constants
+        const BASE_SPEED = 2.5;
+        const MAX_SPEED = 6.5;
+        const BASE_GAP = 140;
+        const MIN_GAP = 90;
+        const BASE_SPAWN_DIST = 220;
+        const MIN_SPAWN_DIST = 150;
+
+        // --- Game Variables ---
+        let score = 0;
+        let highScore = localStorage.getItem('flappy_highScore') ? parseInt(localStorage.getItem('flappy_highScore')) : 0;
+        let pipes = [];
+        
+        // Difficulty Scaling Modifiers
+        let currentSpeed = BASE_SPEED;
+        let currentGap = BASE_GAP;
+        let currentSpawnDist = BASE_SPAWN_DIST;
+
+        // --- Bird Entity ---
+        const bird = {
+            x: 80,
+            y: 250,
+            radius: 13,
+            gravity: 0.28,
+            velocity: 0,
+            jumpStrength: -5.8,
+            
+            update() {
+                if (currentState === STATES.PLAYING) {
+                    this.velocity += this.gravity;
+                    this.y += this.velocity;
+                } else if (currentState === STATES.START_SCREEN) {
+                    // Gentle floating effect on start screen
+                    this.y = 250 + Math.sin(Date.now() * 0.005) * 10;
+                }
+            },
+            
+            flap() {
+                this.velocity = this.jumpStrength;
+            },
+            
+            reset() {
+                this.y = 250;
+                this.velocity = 0;
+            },
+            
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // Rotate bird based on velocity
+                let rotation = Math.min(Math.max(this.velocity * 0.04, -0.3), 0.7);
+                ctx.rotate(rotation);
+
+                // Body (Yellow Circle)
+                ctx.fillStyle = '#f7dc6f';
+                ctx.beginPath();
+                ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Eye (White + Black dot)
+                ctx.fillStyle = '#fff';
+                ctx.beginPath();
+                ctx.arc(5, -4, 4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(6, -4, 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Beak (Orange Triangle)
+                ctx.fillStyle = '#e67e22';
+                ctx.beginPath();
+                ctx.moveTo(10, -1);
+                ctx.lineTo(19, 3);
+                ctx.lineTo(10, 6);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Wing (White/Yellow curve)
+                ctx.fillStyle = '#f1c40f';
+                ctx.beginPath();
+                ctx.arc(-5, 2, 6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.restore();
+            }
+        };
+
+        // --- Pipe Factory & Class ---
+        class Pipe {
+            constructor(x) {
+                this.x = x;
+                this.width = 60;
+                this.passed = false;
+                
+                // Ensure random gap center calculation stays within reasonable viewing bounds
+                const minTop = 40;
+                const maxTop = canvas.height - GROUND_HEIGHT - currentGap - 40;
+                this.topHeight = Math.floor(Math.random() * (maxTop - minTop + 1)) + minTop;
+                this.bottomY = this.topHeight + currentGap;
+            }
+
+            update() {
+                if (currentState === STATES.PLAYING) {
+                    this.x -= currentSpeed;
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = '#73bf2e';
+                ctx.strokeStyle = '#2d5a06';
+                ctx.lineWidth = 3;
+
+                // 1. Top Pipe Body
+                ctx.fillRect(this.x, 0, this.width, this.topHeight);
+                ctx.strokeRect(this.x, 0, this.width, this.topHeight);
+                // Top Pipe Lip
+                ctx.fillRect(this.x - 4, this.topHeight - 20, this.width + 8, 20);
+                ctx.strokeRect(this.x - 4, this.topHeight - 20, this.width + 8, 20);
+
+                // 2. Bottom Pipe Body
+                const bottomHeight = canvas.height - GROUND_HEIGHT - this.bottomY;
+                ctx.fillRect(this.x, this.bottomY, this.width, bottomHeight);
+                ctx.strokeRect(this.x, this.bottomY, this.width, bottomHeight);
+                // Bottom Pipe Lip
+                ctx.fillRect(this.x - 4, this.bottomY, this.width + 8, 20);
+                ctx.strokeRect(this.x - 4, this.bottomY, this.width + 8, 20);
+            }
+        }
+
+        // --- Difficulty Scaling Engine ---
+        function updateDifficulty() {
+            // Mechanics scale continuously with the score. Hardness caps implemented for fair gameplay.
+            currentSpeed = Math.min(BASE_SPEED + (score * 0.15), MAX_SPEED);
+            currentGap = Math.max(BASE_GAP - (score * 1.5), MIN_GAP);
+            currentSpawnDist = Math.max(BASE_SPAWN_DIST - (score * 2.5), MIN_SPAWN_DIST);
+        }
+
+        // --- Physics Collision Handler ---
+        function checkCollisions() {
+            // Ground Collision
+            if (bird.y + bird.radius >= canvas.height - GROUND_HEIGHT) {
+                triggerGameOver();
+                return;
+            }
+            // Ceiling Collision
+            if (bird.y - bird.radius <= CEILING_BOUNDS) {
+                triggerGameOver();
+                return;
+            }
+
+            // Pipe Collisions (Circle vs Rectangle bounding math)
+            for (let pipe of pipes) {
+                // Check Top Pipe Box
+                if (circleRectCollide(bird, pipe.x, 0, pipe.width, pipe.topHeight)) {
+                    triggerGameOver();
+                    return;
+                }
+                // Check Bottom Pipe Box
+                const bottomHeight = canvas.height - GROUND_HEIGHT - pipe.bottomY;
+                if (circleRectCollide(bird, pipe.x, pipe.bottomY, pipe.width, bottomHeight)) {
+                    triggerGameOver();
+                    return;
+                }
+            }
+        }
+
+        function circleRectCollide(circle, rx, ry, rw, rh) {
+            // Find closest point on the rectangle to the circle center
+            let closestX = Math.max(rx, Math.min(circle.x, rx + rw));
+            let closestY = Math.max(ry, Math.min(circle.y, ry + rh));
+
+            // Calculate distance between closest point and circle center
+            let distanceX = circle.x - closestX;
+            let distanceY = circle.y - closestY;
+
+            let distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
+            return distanceSquared < (circle.radius * circle.radius);
+        }
+
+        // --- State Management Triggers ---
+        function startGame() {
+            score = 0;
+            pipes = [];
+            bird.reset();
+            updateDifficulty();
+            // Spawn the initial pipe
+            pipes.push(new Pipe(canvas.width + 50));
+            currentState = STATES.PLAYING;
+        }
+
+        function triggerGameOver() {
+            currentState = STATES.GAME_OVER;
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('flappy_highScore', highScore);
+            }
+        }
+
+        // --- Core Game Loop ---
+        function gameLoop() {
+            // 1. Clear Screen / Draw Sky Background
+            ctx.fillStyle = '#70c5ce';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 2. Handle System Logic States
+            if (currentState === STATES.PLAYING) {
+                // Dynamic difficulty adjusts every frame based on structural changes to score
+                updateDifficulty();
+
+                // Pipe Generation Engine tracking physical spacing (independent of time)
+                let lastPipe = pipes[pipes.length - 1];
+                if (canvas.width - lastPipe.x >= currentSpawnDist) {
+                    pipes.push(new Pipe(canvas.width));
+                }
+
+                // Filter out off-screen pipes
+                pipes = pipes.filter(pipe => pipe.x + pipe.width > 0);
+            }
+
+            // 3. Update & Draw Pipe Entities
+            pipes.forEach(pipe => {
+                pipe.update();
+                pipe.draw();
+
+                // Score Mechanism Track (Triggers exactly when trailing edge of pipe is cleared)
+                if (!pipe.passed && bird.x > pipe.x + pipe.width) {
+                    pipe.passed = true;
+                    score++;
+                }
+            });
+
+            // 4. Update & Draw Ground Assets
+            drawGround();
+
+            // 5. Update & Draw Bird Entity
+            bird.update();
+            bird.draw();
+
+            // 6. UI Render Layer Overlay
+            drawUI();
+
+            // 7. Core Loop Callback Check
+            if (currentState === STATES.PLAYING) {
+                checkCollisions();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Environment & UI Drawing Subroutines ---
+        function drawGround() {
+            const groundY = canvas.height - GROUND_HEIGHT;
+            // Base dirt soil
+            ctx.fillStyle = '#ded895';
+            ctx.fillRect(0, groundY, canvas.width, GROUND_HEIGHT);
+            
+            // Top green grass edge
+            ctx.fillStyle = '#73bf2e';
+            ctx.fillRect(0, groundY, canvas.width, 14);
+            ctx.fillStyle = '#4d801f';
+            ctx.fillRect(0, groundY + 14, canvas.width, 3);
+        }
+
+        function drawUI() {
+            ctx.fillStyle = '#fff';
+            ctx.strokeStyle = '#000';
+            ctx.textAlign = 'center';
+            ctx.lineWidth = 5;
+
+            if (currentState === STATES.START_SCREEN) {
+                ctx.font = 'bold 36px "Courier New", sans-serif';
+                ctx.strokeText("FLAPPY BIRD", canvas.width / 2, 180);
+                ctx.fillText("FLAPPY BIRD", canvas.width / 2, 180);
+
+                ctx.font = 'bold 16px sans-serif';
+                ctx.strokeText("TAP SCREEN OR SPACEBAR", canvas.width / 2, 340);
+                ctx.fillText("TAP SCREEN OR SPACEBAR", canvas.width / 2, 340);
+                ctx.strokeText("TO FLAP & START", canvas.width / 2, 365);
+                ctx.fillText("TO FLAP & START", canvas.width / 2, 365);
+
+                ctx.font = '14px sans-serif';
+                ctx.fillStyle = '#2c3e50';
+                ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, 420);
+
+            } else if (currentState === STATES.PLAYING) {
+                ctx.font = 'bold 40px Arial';
+                ctx.strokeText(score, canvas.width / 2, 80);
+                ctx.fillText(score, canvas.width / 2, 80);
+
+            } else if (currentState === STATES.GAME_OVER) {
+                ctx.font = 'bold 36px sans-serif';
+                ctx.fillStyle = '#e74c3c';
+                ctx.strokeText("GAME OVER", canvas.width / 2, 180);
+                ctx.fillText("GAME OVER", canvas.width / 2, 180);
+
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 20px sans-serif';
+                ctx.strokeText(`Score: ${score}`, canvas.width / 2, 240);
+                ctx.fillText(`Score: ${score}`, canvas.width / 2, 240);
+
+                ctx.strokeText(`High Score: ${highScore}`, canvas.width / 2, 280);
+                ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, 280);
+
+                ctx.font = '16px sans-serif';
+                ctx.strokeText("TAP / SPACEBAR TO RESTART", canvas.width / 2, 380);
+                ctx.fillText("TAP / SPACEBAR TO RESTART", canvas.width / 2, 380);
+            }
+        }
+
+        // --- Global Controller Interceptors ---
+        function handleInput(e) {
+            // Block accidental default page scrolling hooks
+            if (e.type === 'keydown' && e.code !== 'Space') return;
+            if (e.cancelable) e.preventDefault();
+
+            if (currentState === STATES.START_SCREEN) {
+                startGame();
+            } else if (currentState === STATES.PLAYING) {
+                bird.flap();
+            } else if (currentState === STATES.GAME_OVER) {
+                startGame();
+            }
+        }
+
+        // Input Bindings for Universal Native Platform Compatibility
+        window.addEventListener('keydown', handleInput);
+        canvas.addEventListener('mousedown', handleInput);
+        canvas.addEventListener('touchstart', handleInput, { passive: false });
+
+        // Run Init Game Loop Routine execution
+        gameLoop();
+    </script>
+</body>
+</html>
